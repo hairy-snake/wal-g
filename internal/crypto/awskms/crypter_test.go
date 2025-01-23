@@ -2,55 +2,49 @@ package awskms
 
 import (
 	"bytes"
+	"fmt"
 	"io"
+	"strings"
 	"testing"
 
+	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
-	"github.com/wal-g/wal-g/internal/crypto"
+	mocks_awskms "github.com/wal-g/wal-g/internal/crypto/awskms/mocks"
 )
 
-type MockSymmetricKey struct {
-	SymmetricKey
-}
-
-func (symmetricKey *MockSymmetricKey) Encrypt() error {
-	salt := "152 random bytes to imitate aws kms encryption method, random words here: witch collapse practice feed shame open despair creek road again ice least it!"
-	symmetricKey.SetEncryptedKey(append(symmetricKey.GetKey(), salt...))
-	return nil
-}
-
-func (symmetricKey *MockSymmetricKey) Decrypt() error {
-	symmetricKey.SetKey(symmetricKey.GetEncryptedKey()[:symmetricKey.GetKeyLen()])
-	return nil
-}
-
-func NewMockSymmetricKey(kmsKeyID string, keyLen int, encryptedKeyLen int) *MockSymmetricKey {
-	return &MockSymmetricKey{SymmetricKey{SymmetricKeyLen: keyLen, EncryptedSymmetricKeyLen: encryptedKeyLen, KeyID: kmsKeyID}}
-}
-
-func MockCrypterFromKeyID(CseKmsID string) crypto.Crypter {
-	return &Crypter{SymmetricKey: NewMockSymmetricKey(CseKmsID, 32, 184)}
-}
-
 func TestEncryptionCycle(t *testing.T) {
-	const someSecret = "so very secret thingy"
-
-	CseKmsID := "AWSKMSKEYID"
-
-	crypter := MockCrypterFromKeyID(CseKmsID)
-
+	const (
+		secret = "so very secret thingy"
+	)
 	buf := new(bytes.Buffer)
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	symmetricKey := mocks_awskms.NewMockSymmetricKey(ctrl)
+	symmetricKey.EXPECT().Encrypt().Return(nil).Times(1)
+	symmetricKey.EXPECT().Decrypt().Return(nil).Times(1)
+	symmetricKey.EXPECT().SetKey(gomock.Any()).Times(1)
+	symmetricKey.EXPECT().SetEncryptedKey(gomock.Any()).Times(1)
+	symmetricKey.EXPECT().GetEncryptedKey().Return([]byte(strings.Repeat("1", 32) + strings.Repeat("0", 152))).AnyTimes()
+	symmetricKey.EXPECT().GetKey().Return([]byte(strings.Repeat("2", 32))).AnyTimes()
+	symmetricKey.EXPECT().GetKeyLen().Return(32).Times(1)
+	symmetricKey.EXPECT().GetEncryptedKeyLen().Return(152).Times(1)
+
+	crypter := Crypter{symmetricKey}
+
 	encrypt, err := crypter.Encrypt(buf)
 	assert.NoErrorf(t, err, "Encryption error: %v", err)
 
-	encrypt.Write([]byte(someSecret))
+	encrypt.Write([]byte(secret))
 	encrypt.Close()
 
 	decrypt, err := crypter.Decrypt(buf)
 	assert.NoErrorf(t, err, "Decryption error: %v", err)
 
+	fmt.Println(decrypt)
 	decryptedBytes, err := io.ReadAll(decrypt)
 	assert.NoErrorf(t, err, "Decryption read error: %v", err)
 
-	assert.Equal(t, someSecret, string(decryptedBytes), "Decrypted text not equals open text")
+	assert.Equal(t, secret, string(decryptedBytes), "Decrypted text not equals open text")
 }
